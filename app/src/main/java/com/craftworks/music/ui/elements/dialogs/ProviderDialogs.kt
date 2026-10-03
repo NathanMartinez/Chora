@@ -428,10 +428,8 @@ fun CreateMediaProviderDialog(
                                             AppearanceSettingsManager(context).setUsername(username)
                                             setShowDialog(false)
                                         }
-                                        catch (ex: Exception) {
-                                            println(ex.message)
-                                            println(ex.stackTrace)
-                                            errorMessage = "${ex.message}\n\n${ex.stackTrace}"
+                                        catch (_: Exception) {
+                                            errorMessage = context.getString(R.string.provider_authentication_failed)
                                             isError = true
                                         }
                                     }

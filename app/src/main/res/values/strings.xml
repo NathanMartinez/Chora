@@ -18,4 +18,5 @@
 
     // Misc
     <string name="label_separator">Separator</string>
+    <string name="provider_authentication_failed">Unable to authenticate. Check your credentials and server connection.</string>
 </resources>

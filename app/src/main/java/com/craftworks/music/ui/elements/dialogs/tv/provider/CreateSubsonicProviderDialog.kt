@@ -240,7 +240,11 @@ fun CreateSubsonicProviderDialog(
                             /* USERNAME */
                             OutlinedTextField(
                                 value = username,
-                                onValueChange = { username = it },
+                                onValueChange = {
+                                    username = it
+                                    isError = false
+                                    errorMessage = ""
+                                },
                                 label = {
                                     Text(
                                         text = stringResource(R.string.add_media_provider_server_username),
@@ -267,7 +271,11 @@ fun CreateSubsonicProviderDialog(
                             var passwordVisible by remember { mutableStateOf(false) }
                             OutlinedTextField(
                                 value = password,
-                                onValueChange = { password = it },
+                                onValueChange = {
+                                    password = it
+                                    isError = false
+                                    errorMessage = ""
+                                },
                                 label = {
                                     Text(
                                         text = stringResource(R.string.add_media_provider_server_password),
@@ -309,9 +317,8 @@ fun CreateSubsonicProviderDialog(
                                                 AppearanceSettingsManager(context).setUsername(username)
                                                 setShowDialog(false)
                                             }
-                                            catch (ex: Exception) {
-                                                println(ex.message)
-                                                println(ex.stackTrace)
+                                            catch (_: Exception) {
+                                                errorMessage = context.getString(R.string.provider_authentication_failed)
                                                 isError = true
                                             }
                                         }
@@ -374,9 +381,8 @@ fun CreateSubsonicProviderDialog(
                                             AppearanceSettingsManager(context).setUsername(username)
                                             setShowDialog(false)
                                         }
-                                        catch (ex: Exception) {
-                                            println(ex.message)
-                                            println(ex.stackTrace)
+                                        catch (_: Exception) {
+                                            errorMessage = context.getString(R.string.provider_authentication_failed)
                                             isError = true
                                         }
                                     }

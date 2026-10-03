@@ -22,7 +22,6 @@ import com.craftworks.music.data.model.PlaylistListSort
 import com.craftworks.music.data.model.PlaylistRules
 import com.craftworks.music.data.model.ProviderFeature
 import com.craftworks.music.data.model.ProviderInfo
-import com.craftworks.music.data.model.ProviderType
 import com.craftworks.music.data.model.ScrobbleEvent
 import com.craftworks.music.data.model.ScrobbleMediaType
 import com.craftworks.music.data.model.SearchResponse
@@ -240,13 +239,7 @@ open class SubsonicMediaProvider : MediaProvider() {
             throw Exception("Failed to ping provider", e)
         }
 
-        return AuthenticationResponse(
-            isAdmin = res.subsonicResponse.user?.adminRole ?: false,
-            providerType = when (res.subsonicResponse.type) {
-                "navidrome" -> ProviderType.NAVIDROME
-                else -> ProviderType.SUBSONIC
-            }
-        )
+        return res.subsonicResponse.toAuthenticationResponse()
     }
 
     override suspend fun createFavorite(
