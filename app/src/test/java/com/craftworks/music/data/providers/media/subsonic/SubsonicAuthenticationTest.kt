@@ -1,6 +1,8 @@
 package com.craftworks.music.data.providers.media.subsonic
 
 import com.craftworks.music.data.model.ProviderType
+import com.craftworks.music.data.providers.ProviderException
+import com.craftworks.music.data.providers.ProviderFailure
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
@@ -30,7 +32,8 @@ class SubsonicAuthenticationTest {
         val exception = assertThrows(IllegalStateException::class.java) {
             response.subsonicResponse.toAuthenticationResponse()
         }
-        assertEquals("Subsonic authentication failed", exception.message)
+        assertEquals("Provider operation failed.", exception.message)
+        assertEquals(ProviderFailure.AuthenticationRejected, (exception as ProviderException).failure)
     }
 
     @Test

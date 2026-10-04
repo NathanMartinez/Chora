@@ -74,7 +74,7 @@ data class SubsonicBody(
 
 @Serializable
 data class SubsonicMusicFolders(
-    val musicFolder: List<SubsonicMusicFolder>
+    val musicFolder: List<SubsonicMusicFolder> = emptyList()
 )
 
 @Serializable
@@ -378,7 +378,7 @@ data class SubsonicArtistInfo(
 }
 
 @Serializable
-data class SubsonicError(val code: Int, val message: String)
+data class SubsonicError(val code: Int? = null, val message: String? = null)
 
 @Serializable
 data class SubsonicUser(

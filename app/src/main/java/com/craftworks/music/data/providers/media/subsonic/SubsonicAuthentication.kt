@@ -4,7 +4,7 @@ import com.craftworks.music.data.model.AuthenticationResponse
 import com.craftworks.music.data.model.ProviderType
 
 internal fun SubsonicBody.toAuthenticationResponse(): AuthenticationResponse {
-    check(status == "ok" && error == null) { "Subsonic authentication failed" }
+    requireSuccess()
 
     return AuthenticationResponse(
         isAdmin = user?.adminRole ?: false,
