@@ -6,11 +6,12 @@ import de.jensklingenberg.ktorfit.http.Headers
 import de.jensklingenberg.ktorfit.http.POST
 import de.jensklingenberg.ktorfit.http.Query
 import de.jensklingenberg.ktorfit.http.Tag
+import io.ktor.client.statement.HttpResponse
 
 interface NavidromeService {
     @Headers("Content-Type: application/json")
     @POST("auth/login")
-    suspend fun authenticate(@Body body: NavidromeLoginRequest, @Tag isPublic: Boolean = true): NavidromeLoginResponse
+    suspend fun authenticate(@Body body: NavidromeLoginRequest, @Tag isPublic: Boolean = true): HttpResponse
 
     @GET("api/album")
     suspend fun getAlbumList(
