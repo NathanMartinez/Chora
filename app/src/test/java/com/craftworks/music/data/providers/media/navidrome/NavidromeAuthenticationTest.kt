@@ -1,5 +1,8 @@
 package com.craftworks.music.data.providers.media.navidrome
 
+import com.craftworks.music.data.providers.ProviderException
+import com.craftworks.music.data.providers.ProviderFailure
+import com.craftworks.music.data.providers.providerTransportBoundary
 import com.sun.net.httpserver.HttpServer
 import de.jensklingenberg.ktorfit.Ktorfit
 import io.ktor.client.HttpClient
@@ -28,10 +31,15 @@ import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
 import java.net.InetSocketAddress
+import java.net.ConnectException
+import java.net.SocketTimeoutException
+import java.net.UnknownHostException
+import java.time.Instant
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import kotlin.time.Duration.Companion.seconds
 
 class NavidromeAuthenticationTest {
     @Test
@@ -81,14 +89,16 @@ class NavidromeAuthenticationTest {
                         logins++
                         entered.complete(Unit)
                         finish.await()
-                        throw IllegalStateException("Untrusted login response")
+                        throw ProviderException(ProviderFailure.AuthenticationRejected)
                     }
                 }
             }
         }
         entered.await()
         finish.complete(Unit)
-        requests.awaitAll()
+        val failures = requests.awaitAll()
+        failures.forEach { assertSame(failures.first(), it) }
+        assertEquals(ProviderFailure.AuthenticationRejected, failures.first().failure)
         expectAuthenticationFailure {
             authentication.refresh(authentication.snapshot()) {
                 logins++
@@ -156,7 +166,7 @@ class NavidromeAuthenticationTest {
     fun explicitResetAllowsSuccessfulRefreshAfterFailure() = runBlocking {
         val authentication = NavidromeAuthentication()
         val previous = authentication.snapshot()
-        expectAuthenticationFailure { authentication.refresh(previous) { error("Failed login") } }
+        expectAuthenticationFailure { authentication.refresh(previous) { throw ProviderException(ProviderFailure.AuthenticationRejected) } }
         authentication.beginNewEpisode()
         val reset = authentication.snapshot()
         assertNotSame(previous.generation, reset.generation)
@@ -174,7 +184,7 @@ class NavidromeAuthenticationTest {
             expectAuthenticationFailure {
                 authentication.refresh(previous) {
                     logins++
-                    error("Failed login")
+                    throw ProviderException(ProviderFailure.AuthenticationRejected)
                 }
             }
             expectAuthenticationFailure {
@@ -254,6 +264,18 @@ class NavidromeAuthenticationTest {
         concurrentInterceptorRequests(loginSucceeds = false)
 
     @Test
+    fun concurrentInterceptor401sShareRateLimitedLoginWithoutStorm() =
+        concurrentInterceptorRequests(false, 429, "secret body", ProviderFailure.RateLimited(12.seconds))
+
+    @Test
+    fun concurrentInterceptor401sShareMalformedLoginWithoutStorm() =
+        concurrentInterceptorRequests(false, 200, "secret malformed body", ProviderFailure.InvalidResponse)
+
+    @Test
+    fun concurrentInterceptor401sShareServerErrorLoginWithoutStorm() =
+        concurrentInterceptorRequests(false, 503, "secret body", ProviderFailure.HttpError(503))
+
+    @Test
     fun delayedOldInterceptor401CannotRefreshOrPoisonNewEpisode() = delayedOldInterceptor401(delayRetry = false)
 
     @Test
@@ -298,7 +320,12 @@ class NavidromeAuthenticationTest {
         }
     }
 
-    private fun concurrentInterceptorRequests(loginSucceeds: Boolean) = withServer(concurrent = true) { server, baseUrl ->
+    private fun concurrentInterceptorRequests(
+        loginSucceeds: Boolean,
+        loginStatus: Int = 401,
+        loginBody: String = "{}",
+        expected: ProviderFailure = ProviderFailure.AuthenticationRejected
+    ) = withServer(concurrent = true) { server, baseUrl ->
         val requestCount = 4 // Below OkHttp's default per-host concurrency limit.
         val originals = CountDownLatch(requestCount)
         val originalRequests = AtomicInteger()
@@ -321,19 +348,20 @@ class NavidromeAuthenticationTest {
         }
         server.createContext("/auth/login") { exchange ->
             logins.incrementAndGet()
-            respond(exchange, if (loginSucceeds) 200 else 401,
-                if (loginSucceeds) """{"token":"valid-token"}""" else "{}")
+            if (loginStatus == 429) exchange.responseHeaders.set("Retry-After", "12")
+            respond(exchange, if (loginSucceeds) 200 else loginStatus,
+                if (loginSucceeds) """{"token":"valid-token"}""" else loginBody)
         }
         withService(baseUrl) { service ->
             kotlinx.coroutines.coroutineScope {
                 List(requestCount) {
                     async {
                         if (loginSucceeds) assertTrue(service.getAlbumList().isEmpty())
-                        else expectAuthenticationFailure { service.getAlbumList() }
+                        else assertEquals(expected, expectAuthenticationFailure { service.getAlbumList() }.failure)
                     }
                 }.awaitAll()
             }
-            if (!loginSucceeds) expectAuthenticationFailure { service.getAlbumList() }
+            if (!loginSucceeds) assertEquals(expected, expectAuthenticationFailure { service.getAlbumList() }.failure)
             assertEquals(requestCount, originalRequests.get())
             assertEquals(if (loginSucceeds) requestCount else 0, retries.get())
             assertEquals(1, logins.get())
@@ -349,7 +377,8 @@ class NavidromeAuthenticationTest {
     fun nullMissingAndBlankTokensFail() {
         listOf("""{"token":null}""", "{}", """{"token":""}""", """{"token":"  "}""").forEach { body ->
             withResponse(200, body) { response ->
-                expectAuthenticationFailure { response.navidromeLoginToken() }
+                assertEquals(ProviderFailure.InvalidResponse,
+                    expectAuthenticationFailure { response.navidromeLoginToken() }.failure)
             }
         }
     }
@@ -358,14 +387,19 @@ class NavidromeAuthenticationTest {
     fun httpFailuresCannotSupplySuccessfulToken() {
         listOf(401, 429, 500).forEach { status ->
             withResponse(status, """{"token":"must-not-be-used"}""") { response ->
-                expectAuthenticationFailure { response.navidromeLoginToken() }
+                val expected = when (status) {
+                    401 -> ProviderFailure.AuthenticationRejected
+                    429 -> ProviderFailure.RateLimited()
+                    else -> ProviderFailure.HttpError(status)
+                }
+                assertEquals(expected, expectAuthenticationFailure { response.navidromeLoginToken() }.failure)
             }
         }
     }
 
     @Test
     fun malformedLoginResponseFailsWithoutDecoderDetails() = withResponse(200, "not JSON") {
-        expectAuthenticationFailure { it.navidromeLoginToken() }
+        assertEquals(ProviderFailure.InvalidResponse, expectAuthenticationFailure { it.navidromeLoginToken() }.failure)
     }
 
     @Test
@@ -381,7 +415,8 @@ class NavidromeAuthenticationTest {
             respond(exchange, 200, """{"token":"valid-token"}""")
         }
         withService(baseUrl) { service ->
-            expectAuthenticationFailure { service.getAlbumList() }
+            assertEquals(ProviderFailure.AuthenticationRejected,
+                expectAuthenticationFailure { service.getAlbumList() }.failure)
             expectAuthenticationFailure { service.getAlbumList() }
             assertEquals(2, albumRequests)
             assertEquals(1, logins)
@@ -439,18 +474,232 @@ class NavidromeAuthenticationTest {
                 fail("429 must not trigger login")
                 "unused"
             }
-            assertEquals(429, client.get(baseUrl).status.value)
+            val failure = expectAuthenticationFailure { client.get(baseUrl) }
+            assertEquals(ProviderFailure.RateLimited(), failure.failure)
             assertEquals(1, requests)
         }
     }
 
-    private suspend fun expectAuthenticationFailure(block: suspend () -> Any?): NavidromeAuthenticationException {
+    @Test
+    fun login429PreservesDeltaRetryAfter() = withServer { server, baseUrl ->
+        server.createContext("/") { exchange ->
+            exchange.responseHeaders.set("Retry-After", "12")
+            respond(exchange, 429, "secret body")
+        }
+        newClient().use { client ->
+            assertEquals(ProviderFailure.RateLimited(12.seconds),
+                expectAuthenticationFailure { client.get(baseUrl).navidromeLoginToken() }.failure)
+        }
+    }
+
+    @Test
+    fun login429PreservesDateRetryAfterWithExplicitClock() = withServer { server, baseUrl ->
+        server.createContext("/") { exchange ->
+            exchange.responseHeaders.set("Retry-After", "Wed, 21 Oct 2015 07:28:00 GMT")
+            respond(exchange, 429, "secret body")
+        }
+        newClient().use { client ->
+            assertEquals(ProviderFailure.RateLimited(60.seconds), expectAuthenticationFailure {
+                client.get(baseUrl).navidromeLoginToken(Instant.parse("2015-10-21T07:27:00Z"))
+            }.failure)
+        }
+    }
+
+    @Test
+    fun sharedLoginFailureKeepsPreciseSemanticReason() = runBlocking {
+        listOf(
+            ProviderFailure.AuthenticationRejected, ProviderFailure.RateLimited(12.seconds),
+            ProviderFailure.HttpError(503), ProviderFailure.Unavailable, ProviderFailure.InvalidResponse
+        ).forEach { reason ->
+            val authentication = NavidromeAuthentication()
+            val previous = authentication.snapshot()
+            val entered = CompletableDeferred<Unit>()
+            val finish = CompletableDeferred<Unit>()
+            val original = ProviderException(reason)
+            var logins = 0
+            val failures = List(8) {
+                async {
+                    expectAuthenticationFailure {
+                        authentication.refresh(previous) {
+                            logins++
+                            entered.complete(Unit)
+                            finish.await()
+                            throw original
+                        }
+                    }
+                }
+            }
+            entered.await()
+            finish.complete(Unit)
+            failures.awaitAll().forEach { assertSame(original, it) }
+            assertSame(original, expectAuthenticationFailure {
+                authentication.refresh(authentication.snapshot()) { logins++; "unused" }
+            })
+            assertEquals(1, logins)
+            authentication.beginNewEpisode()
+            assertEquals("valid-token", authentication.refresh(authentication.snapshot()) { "valid-token" }.token)
+        }
+    }
+
+    @Test
+    fun unexpectedRefreshDefectsAreSharedUnchangedWithoutLoginStorm() = runBlocking {
+        listOf(
+            NullPointerException(), ClassCastException(), IllegalArgumentException(),
+            IllegalStateException(), NotImplementedError()
+        ).forEach { defect ->
+            val authentication = NavidromeAuthentication()
+            val previous = authentication.snapshot()
+            val entered = CompletableDeferred<Unit>()
+            val finish = CompletableDeferred<Unit>()
+            var logins = 0
+            val requests = List(8) {
+                async {
+                    expectOriginalFailure(defect) {
+                        authentication.refresh(previous) {
+                            logins++
+                            entered.complete(Unit)
+                            finish.await()
+                            throw defect
+                        }
+                    }
+                }
+            }
+            entered.await()
+            finish.complete(Unit)
+            requests.awaitAll()
+            expectOriginalFailure(defect) {
+                authentication.refresh(authentication.snapshot()) { logins++; "unused" }
+            }
+            expectOriginalFailure(defect) { authentication.checkEpisode(previous) }
+            assertEquals(1, logins)
+            authentication.beginNewEpisode()
+            assertEquals("valid-token", authentication.refresh(authentication.snapshot()) { "valid-token" }.token)
+        }
+    }
+
+    @Test
+    fun oldGenerationDoesNotReadNewSemanticFailure() = runBlocking {
+        val authentication = NavidromeAuthentication()
+        val old = authentication.refresh(authentication.snapshot()) { "old-token" }
+        authentication.beginNewEpisode()
+        val current = authentication.snapshot()
+        val failure = ProviderException(ProviderFailure.RateLimited(12.seconds))
+        assertSame(failure, expectAuthenticationFailure { authentication.refresh(current) { throw failure } })
+        assertEquals(ProviderFailure.AuthenticationRecoveryFailed,
+            expectAuthenticationFailure { authentication.refresh(old) { error("Stale login") } }.failure)
+        assertEquals(ProviderFailure.AuthenticationRecoveryFailed,
+            expectAuthenticationFailure { authentication.checkEpisode(old) }.failure)
+        assertEquals(ProviderFailure.AuthenticationRecoveryFailed,
+            expectAuthenticationFailure { authentication.reject(old) }.failure)
+        assertSame(failure, authentication.snapshot().failure)
+    }
+
+    @Test
+    fun authenticationCancellationIsUnchangedAndUnlatched() = runBlocking {
+        val authentication = NavidromeAuthentication()
+        val previous = authentication.snapshot()
+        val cancellation = CancellationException("cancelled")
+        expectOriginalFailure(cancellation) { authentication.refresh(previous) { throw cancellation } }
+        assertSame(previous, authentication.snapshot())
+        assertEquals("valid-token", authentication.refresh(previous) { "valid-token" }.token)
+    }
+
+    @Test
+    fun knownLoginTransportFailuresAreSemanticAndLatched() = runBlocking {
+        listOf(SocketTimeoutException("secret"), ConnectException("secret"), UnknownHostException("secret")).forEach { cause ->
+            val authentication = NavidromeAuthentication()
+            val original = expectAuthenticationFailure {
+                authentication.refresh(authentication.snapshot()) {
+                    providerTransportBoundary { throw cause }
+                }
+            }
+            assertEquals(ProviderFailure.Unavailable, original.failure)
+            assertSame(original, expectAuthenticationFailure {
+                authentication.refresh(authentication.snapshot()) { error("Latched login") }
+            })
+        }
+    }
+
+    @Test
+    fun retry429And5xxAreRejectedBeforeTypedConversionWithoutAnotherLogin() {
+        listOf(429, 503).forEach { status ->
+            withServer { server, baseUrl ->
+                var requests = 0
+                var logins = 0
+                server.createContext("/api/album") { exchange ->
+                    requests++
+                    if (requests == 1) respond(exchange, 401, "{}") else {
+                        exchange.responseHeaders.set("Retry-After", "12")
+                        respond(exchange, status, "secret invalid album body")
+                    }
+                }
+                server.createContext("/auth/login") { exchange ->
+                    logins++
+                    respond(exchange, 200, """{"token":"valid-token"}""")
+                }
+                withService(baseUrl) { service ->
+                    val expected = if (status == 429) ProviderFailure.RateLimited(12.seconds)
+                        else ProviderFailure.HttpError(status)
+                    assertEquals(expected, expectAuthenticationFailure { service.getAlbumList() }.failure)
+                    assertEquals(2, requests)
+                    assertEquals(1, logins)
+                }
+            }
+        }
+    }
+
+    @Test
+    fun malformedProtectedRetryIsTranslatedAtProviderDecodeBoundary() = withServer { server, baseUrl ->
+        var requests = 0
+        var logins = 0
+        server.createContext("/api/album") { exchange ->
+            requests++
+            respond(exchange, if (requests == 1) 401 else 200, if (requests == 1) "{}" else "secret malformed body")
+        }
+        server.createContext("/auth/login") { exchange ->
+            logins++
+            respond(exchange, 200, """{"token":"valid-token"}""")
+        }
+        withService(baseUrl) { service ->
+            assertEquals(ProviderFailure.InvalidResponse, expectAuthenticationFailure {
+                navidromeResponseBoundary { service.getAlbumList() }
+            }.failure)
+            assertEquals(2, requests)
+            assertEquals(1, logins)
+        }
+    }
+
+    @Test
+    fun nativeResponseBoundaryCoversLateTransportAndPreservesUnexpectedFailures() = runBlocking {
+        assertEquals(ProviderFailure.Unavailable, expectAuthenticationFailure {
+            navidromeResponseBoundary { throw SocketTimeoutException("secret late transport") }
+        }.failure)
+        val defect = NullPointerException()
+        expectOriginalFailure(defect) { navidromeResponseBoundary { throw defect } }
+        val cancellation = CancellationException("cancelled")
+        expectOriginalFailure(cancellation) { navidromeResponseBoundary { throw cancellation } }
+    }
+
+    private suspend fun expectOriginalFailure(expected: Throwable, block: suspend () -> Any?) {
+        val caught = try {
+            block()
+            null
+        } catch (failure: Throwable) {
+            failure
+        }
+        assertSame(expected, caught)
+        assertTrue(caught !is ProviderException)
+    }
+
+    private suspend fun expectAuthenticationFailure(block: suspend () -> Any?): ProviderException {
         try {
             block()
             fail("Expected authentication failure")
-        } catch (e: NavidromeAuthenticationException) {
-            assertEquals("Navidrome authentication failed.", e.message)
+        } catch (e: ProviderException) {
+            assertEquals("Provider operation failed.", e.message)
             assertNull(e.cause)
+            assertEquals(0, e.suppressed.size)
+            assertEquals("${ProviderException::class.java.name}: Provider operation failed.", e.toString())
             return e
         }
         error("Unreachable")
