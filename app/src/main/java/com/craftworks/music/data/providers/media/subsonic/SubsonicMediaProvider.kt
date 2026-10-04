@@ -196,7 +196,7 @@ open class SubsonicMediaProvider : MediaProvider() {
                     }
                 }
             }
-        }
+        }.apply { installSubsonicHttpValidation() }
 
         Ktorfit.Builder()
             .baseUrl(if (providerData.url.endsWith("/")) providerData.url else providerData.url + "/")
@@ -220,7 +220,7 @@ open class SubsonicMediaProvider : MediaProvider() {
         playlistId: String,
         songIds: List<String>
     ): Boolean {
-        return service.updatePlaylist(playlistId, songIdToAdd = songIds).subsonicResponse.status == "ok"
+        return subsonicResponseBoundary { service.updatePlaylist(playlistId, songIdToAdd = songIds) }.requireSuccess().status == "ok"
     }
 
     override suspend fun authenticate(
@@ -233,13 +233,9 @@ open class SubsonicMediaProvider : MediaProvider() {
         _salt = StringUtils.generateSalt(8)
         _token = StringUtils.md5Hash(providerData.password + _salt)
 
-        val res = try {
-            service.ping()
-        } catch (e: Exception) {
-            throw Exception("Failed to ping provider", e)
-        }
+        val res = subsonicResponseBoundary { service.ping() }
 
-        return res.subsonicResponse.toAuthenticationResponse()
+        return res.toAuthenticationResponse()
     }
 
     override suspend fun createFavorite(
@@ -248,21 +244,21 @@ open class SubsonicMediaProvider : MediaProvider() {
     ): Boolean {
         val res = when (type) {
             LibraryType.SONG -> {
-                service.star(ids, null, null)
+                subsonicResponseBoundary { service.star(ids, null, null) }
             }
 
             LibraryType.ALBUM -> {
-                service.star(null, ids, null)
+                subsonicResponseBoundary { service.star(null, ids, null) }
             }
 
             LibraryType.ARTIST -> {
-                service.star(null, null, ids)
+                subsonicResponseBoundary { service.star(null, null, ids) }
             }
 
             else -> return false
         }
 
-        return res.subsonicResponse.status == "ok"
+        return res.requireSuccess().status == "ok"
     }
 
     override suspend fun createInternetRadioStation(
@@ -270,7 +266,7 @@ open class SubsonicMediaProvider : MediaProvider() {
         streamUrl: String,
         homepageUrl: String?
     ): Boolean {
-        return service.createInternetRadioStation(streamUrl, name, homepageUrl).subsonicResponse.status == "ok"
+        return subsonicResponseBoundary { service.createInternetRadioStation(streamUrl, name, homepageUrl) }.requireSuccess().status == "ok"
     }
 
     override suspend fun createPlaylist(
@@ -281,7 +277,7 @@ open class SubsonicMediaProvider : MediaProvider() {
         queryBuilderRules: PlaylistRules?,
         sync: Boolean
     ): String? {
-        return service.createPlaylist(name = name).subsonicResponse.playlist?.id
+        return subsonicResponseBoundary { service.createPlaylist(name = name) }.createdPlaylistId()
     }
 
     override suspend fun deleteFavorite(
@@ -290,50 +286,53 @@ open class SubsonicMediaProvider : MediaProvider() {
     ): Boolean {
         val res = when (type) {
             LibraryType.SONG -> {
-                service.unstar(ids, null, null)
+                subsonicResponseBoundary { service.unstar(ids, null, null) }
             }
 
             LibraryType.ALBUM -> {
-                service.unstar(null, ids, null)
+                subsonicResponseBoundary { service.unstar(null, ids, null) }
             }
 
             LibraryType.ARTIST -> {
-                service.unstar(null, null, ids)
+                subsonicResponseBoundary { service.unstar(null, null, ids) }
             }
 
             else -> return false
         }
 
-        return res.subsonicResponse.status == "ok"
+        return res.requireSuccess().status == "ok"
     }
 
     override suspend fun deleteInternetRadioStation(id: String): Boolean {
-        return service.deleteInternetRadioStation(id).subsonicResponse.status == "ok"
+        return subsonicResponseBoundary { service.deleteInternetRadioStation(id) }.requireSuccess().status == "ok"
     }
 
     override suspend fun deletePlaylist(id: String): Boolean {
-        return service.deletePlaylist(id).subsonicResponse.status == "ok"
+        return subsonicResponseBoundary { service.deletePlaylist(id) }.requireSuccess().status == "ok"
     }
 
     override suspend fun getAlbumArtistDetail(id: String): AlbumArtistDetailResponse {
-        val res = service.getArtist(id).subsonicResponse.artist
-        return AlbumArtistDetailResponse(res?.toMediaModel(this.id), res?.album?.map { it.toMediaModel(this.id) })
+        val res = subsonicResponseBoundary { service.getArtist(id) }
+            .requirePayload(missingContentIsExplicit = true) { artist }
+        return AlbumArtistDetailResponse(res.toMediaModel(this.id), res.album?.map { it.toMediaModel(this.id) })
     }
 
     override suspend fun getAlbumArtistInfo(
         id: String,
         limit: Int?
     ): AlbumArtistInfo? {
-        return service.getArtistInfo(id = id, count = limit).subsonicResponse.artistInfo?.toArtistInfo(this.id)
+        return subsonicResponseBoundary { service.getArtistInfo(id = id, count = limit) }.requireSuccess().artistInfo?.toArtistInfo(this.id)
     }
 
     override suspend fun getAlbumArtistList(query: MediaQuery.AlbumArtistListQuery): List<MediaModel.Artist> {
         if (query.startIndex > 0)
             return emptyList()
 
-        var artists = (service.getArtists(
-            musicFolderId = query.musicFolderId?.map { it.toInt() } ?: data.libraries.filter { it.second }.map { it.first.id.toInt() },
-        ).subsonicResponse.artists?.index ?: emptyList())
+        var artists = (subsonicResponseBoundary {
+            service.getArtists(
+                musicFolderId = query.musicFolderId?.map { it.toInt() } ?: data.libraries.filter { it.second }.map { it.first.id.toInt() },
+            )
+        }.requireSuccess().artists?.index ?: emptyList())
             .flatMap { it.artist }
             .map { it.toMediaModel(id) }
 
@@ -353,12 +352,8 @@ open class SubsonicMediaProvider : MediaProvider() {
     }
 
     override suspend fun getAlbumDetail(id: String): MediaModel.Album {
-        try {
-            return service.getAlbum(id).subsonicResponse.album!!.toMediaModel(this.id)
-        }
-        catch (e: Exception) {
-            throw Exception("Failed to get album", e)
-        }
+        return subsonicResponseBoundary { service.getAlbum(id) }
+            .requirePayload(missingContentIsExplicit = true) { album }.toMediaModel(this.id)
     }
 
     override suspend fun getAlbumInfo(id: String): AlbumInfo {
@@ -368,7 +363,7 @@ open class SubsonicMediaProvider : MediaProvider() {
     override suspend fun getAlbumList(query: MediaQuery.AlbumListQuery): List<MediaModel.Album> {
         println("GETTING ALBUM LIST")
         if (!query.searchTerm.isNullOrBlank()) {
-            val res = try {
+            val res = subsonicResponseBoundary {
                 service.search3(
                     albumCount = query.limit ?: 20,
                     albumOffset = query.startIndex,
@@ -379,11 +374,9 @@ open class SubsonicMediaProvider : MediaProvider() {
                     songCount = 0,
                     songOffset = 0
                 )
-            } catch (e: Exception) {
-                throw Exception("Failed to get album list", e)
             }
 
-            return res.subsonicResponse.searchResult3?.album?.map { it.toMediaModel(this.id) } ?: emptyList()
+            return res.requireSuccess().searchResult3?.album?.map { it.toMediaModel(this.id) } ?: emptyList()
         }
 
         val currentYear = Year.now().value
@@ -415,7 +408,7 @@ open class SubsonicMediaProvider : MediaProvider() {
         if (query.favorite == true)
             type = "starred"
 
-        val res = try {
+        val res = subsonicResponseBoundary {
             service.getAlbumList(
                 type = type,
                 size = query.limit,
@@ -425,11 +418,9 @@ open class SubsonicMediaProvider : MediaProvider() {
                 genre = query.genreIds?.firstOrNull(),
                 musicFolderId = query.musicFolderId?.map { it.toInt() } ?: data.libraries.filter { it.second }.map { it.first.id.toInt() },
             )
-        } catch (e: Exception) {
-            throw Exception("Failed to get album list", e)
         }
 
-        return res.subsonicResponse.albumList2?.album?.map { it.toMediaModel(this.id) } ?: emptyList()
+        return res.requireSuccess().albumList2?.album?.map { it.toMediaModel(this.id) } ?: emptyList()
     }
 
     override suspend fun getAlbumRadio(
@@ -494,26 +485,22 @@ open class SubsonicMediaProvider : MediaProvider() {
     }
 
     override suspend fun getInternetRadioStations(): List<MediaModel.InternetRadioStation> {
-        return service.getInternetRadioStations()
-            .subsonicResponse.internetRadioStations?.internetRadioStation
+        return subsonicResponseBoundary { service.getInternetRadioStations() }
+            .requireSuccess().internetRadioStations?.internetRadioStation
             ?.map { it.toMediaModel(id) } ?: emptyList()
     }
 
     override suspend fun getLyrics(songId: String): List<Lyrics> {
-        return service.getLyricsBySongId(songId, true)
-            .subsonicResponse.lyricsList?.structuredLyrics
+        return subsonicResponseBoundary { service.getLyricsBySongId(songId, true) }
+            .requireSuccess().lyricsList?.structuredLyrics
             ?.filter { it.kind == "main" || it.kind == null }
             ?.map { it.toLyrics() }.orEmpty()
     }
 
     override suspend fun getMusicFolderList(): List<MusicFolder> {
-        val res = try {
-            service.getMusicFolderList()
-        } catch (e: Exception) {
-            throw Exception("Failed to get music folders", e)
-        }
+        val res = subsonicResponseBoundary { service.getMusicFolderList() }
 
-        return res.subsonicResponse.musicFolders?.musicFolder?.map {
+        return res.requireSuccess().musicFolders?.musicFolder?.map {
             MusicFolder(
                 id = it.id.toString(),
                 name = it.name
@@ -526,7 +513,7 @@ open class SubsonicMediaProvider : MediaProvider() {
     }
 
     override suspend fun getPlaylistList(query: MediaQuery.PlaylistListQuery): List<MediaModel.Playlist> {
-        var playlists = service.getPlaylists().subsonicResponse.playlists?.playlist ?: emptyList()
+        var playlists = subsonicResponseBoundary { service.getPlaylists() }.requireSuccess().playlists?.playlist ?: emptyList()
 
         if (query.searchTerm != null) {
             playlists = playlists.filter { it.name.contains(query.searchTerm, true) }
@@ -543,7 +530,8 @@ open class SubsonicMediaProvider : MediaProvider() {
     }
 
     override suspend fun getPlaylistSongList(id: String): List<MediaModel.Song> {
-        return service.getPlaylist(id).subsonicResponse.playlist?.entry?.map { it.toMediaModel(this.id) } ?: emptyList()
+        return subsonicResponseBoundary { service.getPlaylist(id) }
+            .requirePayload(missingContentIsExplicit = true) { playlist }.entry.map { it.toMediaModel(this.id) }
     }
 
     override suspend fun getPlayQueue(): GetQueueResponse {
@@ -576,29 +564,35 @@ open class SubsonicMediaProvider : MediaProvider() {
 
     override suspend fun getSongList(query: MediaQuery.SongListQuery): List<MediaModel.Song> {
         if (query.searchTerm != null) {
-            return service.search3(
-                albumCount = 0,
-                albumOffset = 0,
-                artistCount = 0,
-                artistOffset = 0,
-                musicFolderId = query.musicFolderId?.map { it.toInt() } ?: data.libraries.filter { it.second }.map { it.first.id.toInt() },
-                query = query.searchTerm,
-                songCount = query.limit ?: 20,
-                songOffset = query.startIndex
-            ).subsonicResponse.searchResult3?.song?.map { it.toMediaModel(this.id) } ?: emptyList()
+            return subsonicResponseBoundary {
+                service.search3(
+                    albumCount = 0,
+                    albumOffset = 0,
+                    artistCount = 0,
+                    artistOffset = 0,
+                    musicFolderId = query.musicFolderId?.map { it.toInt() } ?: data.libraries.filter { it.second }.map { it.first.id.toInt() },
+                    query = query.searchTerm,
+                    songCount = query.limit ?: 20,
+                    songOffset = query.startIndex
+                )
+            }.requireSuccess().searchResult3?.song?.map { it.toMediaModel(this.id) } ?: emptyList()
         }
         if (query.genreIds?.any()?:false) {
-            return service.getSongsByGenre(
-                count = query.limit,
-                genre = query.genreIds[0],
-                musicFolderId = query.musicFolderId?.map { it.toInt() } ?: data.libraries.filter { it.second }.map { it.first.id.toInt() },
-                offset = query.startIndex
-            ).subsonicResponse.songsByGenre?.song?.map { it.toMediaModel(this.id) } ?: emptyList()
+            return subsonicResponseBoundary {
+                service.getSongsByGenre(
+                    count = query.limit,
+                    genre = query.genreIds[0],
+                    musicFolderId = query.musicFolderId?.map { it.toInt() } ?: data.libraries.filter { it.second }.map { it.first.id.toInt() },
+                    offset = query.startIndex
+                )
+            }.requireSuccess().songsByGenre?.song?.map { it.toMediaModel(this.id) } ?: emptyList()
         }
         if (query.favorite?:false) {
-            return service.getStarred(
-                musicFolderId = query.musicFolderId?.map { it.toInt() } ?: data.libraries.filter { it.second }.map { it.first.id.toInt() },
-            ).subsonicResponse.starred?.song?.map { it.toMediaModel(this.id) } ?: emptyList()
+            return subsonicResponseBoundary {
+                service.getStarred(
+                    musicFolderId = query.musicFolderId?.map { it.toInt() } ?: data.libraries.filter { it.second }.map { it.first.id.toInt() },
+                )
+            }.requireSuccess().starred?.song?.map { it.toMediaModel(this.id) } ?: emptyList()
         }
 
         val artistsIds = mutableListOf<String>()
@@ -609,16 +603,18 @@ open class SubsonicMediaProvider : MediaProvider() {
             TODO("Not yet implemented")
         }
 
-        return service.search3(
-            albumCount = 0,
-            albumOffset = 0,
-            artistCount = 0,
-            artistOffset = 0,
-            musicFolderId = query.musicFolderId?.map { it.toInt() } ?: data.libraries.filter { it.second }.map { it.first.id.toInt() },
-            query = query.searchTerm?:"",
-            songCount = query.limit ?: 20,
-            songOffset = query.startIndex
-        ).subsonicResponse.searchResult3?.song?.map { it.toMediaModel(this.id) } ?: emptyList()
+        return subsonicResponseBoundary {
+            service.search3(
+                albumCount = 0,
+                albumOffset = 0,
+                artistCount = 0,
+                artistOffset = 0,
+                musicFolderId = query.musicFolderId?.map { it.toInt() } ?: data.libraries.filter { it.second }.map { it.first.id.toInt() },
+                query = query.searchTerm?:"",
+                songCount = query.limit ?: 20,
+                songOffset = query.startIndex
+            )
+        }.requireSuccess().searchResult3?.song?.map { it.toMediaModel(this.id) } ?: emptyList()
     }
 
     override fun getStreamUrl(
@@ -692,22 +688,22 @@ open class SubsonicMediaProvider : MediaProvider() {
     }
 
     override suspend fun ping(): Boolean {
-        return try {
-            service.ping().subsonicResponse.openSubsonic == true
-        } catch (ex: Exception) {
-            false
-        }
+        // TV setup probes this before credentials exist; the flag describes capability, not auth success.
+        return subsonicResponseBoundary { service.ping() }.openSubsonic == true
     }
 
     override suspend fun removeFromPlaylist(
         id: String,
         songIds: List<String>
     ): Boolean {
-        val playlist = service.getPlaylist(id).subsonicResponse.playlist
-        return service.updatePlaylist(id, songIndexToRemove =
-            songIds.map { playlist?.entry?.indexOfFirst { song -> song.id == it } ?: -1 }
-                .filter { it != -1 }
-        ).subsonicResponse.status == "ok"
+        val playlist = subsonicResponseBoundary { service.getPlaylist(id) }
+            .requirePayload(missingContentIsExplicit = true) { playlist }
+        return subsonicResponseBoundary {
+            service.updatePlaylist(id, songIndexToRemove =
+                songIds.map { playlist.entry.indexOfFirst { song -> song.id == it } }
+                    .filter { it != -1 }
+            )
+        }.requireSuccess().status == "ok"
     }
 
     override suspend fun replacePlaylist(
@@ -734,12 +730,7 @@ open class SubsonicMediaProvider : MediaProvider() {
         event: ScrobbleEvent?,
         position: Int?
     ) {
-        try {
-            service.scrobble(id, position, submission)
-        }
-        catch (e: Exception) {
-            throw Exception("Failed to scrobble", e)
-        }
+        subsonicResponseBoundary { service.scrobble(id, position, submission) }.requireSuccess()
     }
 
     override suspend fun search(query: MediaQuery.SearchQuery): SearchResponse {
@@ -759,7 +750,7 @@ open class SubsonicMediaProvider : MediaProvider() {
         type: LibraryType
     ): Boolean {
         return ids.all {
-            service.setRating(it, rating).subsonicResponse.status == "ok"
+            subsonicResponseBoundary { service.setRating(it, rating) }.requireSuccess().status == "ok"
         }
     }
 

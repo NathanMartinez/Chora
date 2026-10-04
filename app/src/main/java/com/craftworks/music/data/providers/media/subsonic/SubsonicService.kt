@@ -98,7 +98,7 @@ interface SubsonicService {
         @Query("id") id: String,
         @Query("time") time: Int? = 0,
         @Query("submission") submission: Boolean? = true
-    )
+    ): SubsonicResponse
 
     @GET("rest/search3.view")
     suspend fun search3(
