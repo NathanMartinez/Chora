@@ -11,20 +11,14 @@ import com.craftworks.music.data.providers.media.subsonic.SubsonicMediaProvider
 import de.jensklingenberg.ktorfit.Ktorfit
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.okhttp.OkHttp
-import io.ktor.client.plugins.HttpSend
 import io.ktor.client.plugins.HttpTimeout
-import io.ktor.client.plugins.api.createClientPlugin
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.plugins.logging.LogLevel
 import io.ktor.client.plugins.logging.Logger
 import io.ktor.client.plugins.logging.Logging
 import io.ktor.client.plugins.logging.SIMPLE
-import io.ktor.client.plugins.plugin
-import io.ktor.http.HttpStatusCode
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.util.AttributeKey
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.Contextual
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
@@ -167,19 +161,15 @@ class NavidromeMediaProvider : SubsonicMediaProvider() {
     private val isPublicKey = AttributeKey<Boolean>("isPublic")
 
     @Transient
-    private var _token: String? = null
-    @Transient
-    private val authMutex = Mutex()
+    private val authentication = NavidromeAuthentication()
+
+    /** Begin a new native authentication episode after intentional Retry or credential replacement. */
+    suspend fun resetAuthentication() {
+        authentication.beginNewEpisode()
+    }
 
     private val ktorfit: Ktorfit by lazy {
         val ktorClient = HttpClient(OkHttp) {
-            install(createClientPlugin("NavidromeAuthHeaders") {
-                onRequest { request, _ ->
-                    if (request.attributes.getOrNull(isPublicKey) ?: false) return@onRequest
-                    request.headers.append("X-ND-Authorization", "Bearer $_token")
-                }
-            })
-
             install(Logging) {
                 logger = Logger.SIMPLE
                 level = LogLevel.INFO
@@ -215,32 +205,13 @@ class NavidromeMediaProvider : SubsonicMediaProvider() {
                 }
             }
         }.apply {
-            plugin(HttpSend).intercept { request ->
-                val originalCall = execute(request)
-
-                if (originalCall.response.status == HttpStatusCode.Unauthorized && !(request.attributes.getOrNull(isPublicKey) ?: false)) {
-
-                    val tokenBeforeRefresh = _token
-
-                    val newToken = authMutex.withLock {
-                        if (_token != tokenBeforeRefresh) {
-                            _token
-                        } else service.authenticate(
-                            NavidromeLoginRequest(
-                                username = providerData.username,
-                                password = providerData.password
-                            )
-                        ).token.also {
-                            _token = it
-                        }
-                    }
-
-                    request.headers["X-ND-Authorization"] = "Bearer $newToken"
-
-                    return@intercept execute(request)
-                }
-
-                originalCall
+            installNavidromeAuthentication(authentication, isPublicKey) {
+                service.authenticate(
+                    NavidromeLoginRequest(
+                        username = providerData.username,
+                        password = providerData.password
+                    )
+                ).navidromeLoginToken()
             }
         }
 
