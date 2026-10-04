@@ -224,62 +224,70 @@ class NavidromeMediaProvider : SubsonicMediaProvider() {
     private val service: NavidromeService by lazy { ktorfit.createNavidromeService() }
 
     override suspend fun getAlbumArtistList(query: MediaQuery.AlbumArtistListQuery): List<MediaModel.Artist> {
-        return service.getAlbumArtistList(
-            end = query.startIndex + (query.limit ?: 50),
-            order = query.sortOrder.name,
-            start = query.startIndex,
-            sort = ALBUM_ARTIST_SORT_BINDING[query.sortBy],
-            libraryId = query.musicFolderId ?: data.libraries.filter { it.second }.map { it.first.id },
-            name = query.searchTerm,
-            role = "albumartist",
-            starred = query.favorite,
-        ).map { it.toMediaModel(id) }
+        return navidromeResponseBoundary {
+            service.getAlbumArtistList(
+                end = query.startIndex + (query.limit ?: 50),
+                order = query.sortOrder.name,
+                start = query.startIndex,
+                sort = ALBUM_ARTIST_SORT_BINDING[query.sortBy],
+                libraryId = query.musicFolderId ?: data.libraries.filter { it.second }.map { it.first.id },
+                name = query.searchTerm,
+                role = "albumartist",
+                starred = query.favorite,
+            )
+        }.map { it.toMediaModel(id) }
     }
 
     override suspend fun getAlbumList(query: MediaQuery.AlbumListQuery): List<MediaModel.Album> {
-        return service.getAlbumList(
-            end = query.startIndex + (query.limit ?: 50),
-            order = query.sortOrder.name,
-            start = query.startIndex,
-            sort = ALBUM_SORT_BINDING[query.sortBy],
-            artistId = query.artistIds,
-            compilation = query.compilation,
-            genreId = query.genreIds,
-            hasRating = query.hasRating,
-            libraryId = query.musicFolderId ?: data.libraries.filter { it.second }.map { it.first.id },
-            name = query.searchTerm,
-            starred = query.favorite,
-            year = query.maxYear ?: query.minYear
-        ).map { it.toMediaModel(id) }
+        return navidromeResponseBoundary {
+            service.getAlbumList(
+                end = query.startIndex + (query.limit ?: 50),
+                order = query.sortOrder.name,
+                start = query.startIndex,
+                sort = ALBUM_SORT_BINDING[query.sortBy],
+                artistId = query.artistIds,
+                compilation = query.compilation,
+                genreId = query.genreIds,
+                hasRating = query.hasRating,
+                libraryId = query.musicFolderId ?: data.libraries.filter { it.second }.map { it.first.id },
+                name = query.searchTerm,
+                starred = query.favorite,
+                year = query.maxYear ?: query.minYear
+            )
+        }.map { it.toMediaModel(id) }
     }
 
     override suspend fun getArtistList(query: MediaQuery.ArtistListQuery): List<MediaModel.Artist> {
-        return service.getAlbumArtistList(
-            end = query.startIndex + (query.limit ?: 50),
-            order = query.sortOrder.name,
-            start = query.startIndex,
-            sort = ARTIST_SORT_BINDING[query.sortBy],
-            libraryId = query.musicFolderId ?: data.libraries.filter { it.second }.map { it.first.id },
-            name = query.searchTerm,
-            starred = query.favorite,
-        ).map { it.toMediaModel(id) }
+        return navidromeResponseBoundary {
+            service.getAlbumArtistList(
+                end = query.startIndex + (query.limit ?: 50),
+                order = query.sortOrder.name,
+                start = query.startIndex,
+                sort = ARTIST_SORT_BINDING[query.sortBy],
+                libraryId = query.musicFolderId ?: data.libraries.filter { it.second }.map { it.first.id },
+                name = query.searchTerm,
+                starred = query.favorite,
+            )
+        }.map { it.toMediaModel(id) }
     }
 
     override suspend fun getSongList(query: MediaQuery.SongListQuery): List<MediaModel.Song> {
-        return service.getSongList(
-            end = query.startIndex + (query.limit ?: 50),
-            order = query.sortOrder.name,
-            start = query.startIndex,
-            sort = SONG_SORT_BINDING[query.sortBy],
-            albumId = query.albumIds,
-            genreId = query.genreIds,
-            artistsId = query.artistIds,
-            hasRating = query.hasRating,
-            libraryId = query.musicFolderId ?: data.libraries.filter { it.second }.map { it.first.id },
-            starred = query.favorite,
-            title = query.searchTerm,
-            year = query.maxYear ?: query.minYear,
-            missing = false
-        ).map { it.toMediaModel(id) }
+        return navidromeResponseBoundary {
+            service.getSongList(
+                end = query.startIndex + (query.limit ?: 50),
+                order = query.sortOrder.name,
+                start = query.startIndex,
+                sort = SONG_SORT_BINDING[query.sortBy],
+                albumId = query.albumIds,
+                genreId = query.genreIds,
+                artistsId = query.artistIds,
+                hasRating = query.hasRating,
+                libraryId = query.musicFolderId ?: data.libraries.filter { it.second }.map { it.first.id },
+                starred = query.favorite,
+                title = query.searchTerm,
+                year = query.maxYear ?: query.minYear,
+                missing = false
+            )
+        }.map { it.toMediaModel(id) }
     }
 }
